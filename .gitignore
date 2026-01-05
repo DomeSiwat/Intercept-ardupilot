@@ -1,0 +1,23 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+
+# Logs
+logs/
+*.log
+
+# MAVSDK / ArduPilot
+*.bin
+*.parm
+
+# Env
+.env
+
+# ML models
+*.bin
+*.param
+*.onnx
+*.engine
+models/
+yolo/
