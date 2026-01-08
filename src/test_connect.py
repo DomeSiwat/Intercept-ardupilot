@@ -2,7 +2,9 @@
 import asyncio
 from mavsdk import System
 
-ADDR = "udpin://0.0.0.0:14540"
+ADDR = "serial:///dev/ttyAMA0:115200"
+#ADDR = "udpin://0.0.0.0:14540"
+
 
 async def main():
     drone = System()

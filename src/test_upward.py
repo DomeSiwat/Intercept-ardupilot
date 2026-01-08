@@ -10,7 +10,7 @@ from mavsdk.telemetry import FlightMode
 UP_VD = -0.5        # m/s  (NED: negative Down = UP)
 HZ = 20
 DT = 1.0 / HZ
-CONNECT_ADDR = "udpin://0.0.0.0:14540"
+CONNECT_ADDR = "serial:///dev/ttyAMA0:115200"
 # =================================================
 
 
