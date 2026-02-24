@@ -2,7 +2,8 @@ import math
 from config import (
     MAX_SPEED, MIN_SPEED, STOP_RADIUS,
     MAX_VD, ALT_HOLD_BAND,
-    MAX_YAW_RATE_DEG_S,
+    MAX_YAW_RATE_DEG_S, MIN_YAW_RATE_DEG_S,
+    ACCELERATION, YAW_FULL_SLOW_DEG,
 )
 
 
@@ -36,21 +37,83 @@ def wrap_to_180(angle):
     return (angle + 180) % 360 - 180
 
 
+# -------------------- Yaw --------------------
+
+class YawController:
+    """Dynamic rate-limited yaw controller.
+
+    Yaw rate scales with yaw error:
+      - Large error → fast turn  (MAX_YAW_RATE_DEG_S)
+      - Small error → slow turn  (MIN_YAW_RATE_DEG_S)
+    """
+
+    def __init__(self):
+        self.current_yaw_deg = 0.0
+        self.yaw_error_deg = 0.0   # exposed so speed controller can read it
+
+    def update(self, target_yaw_deg, dt):
+        """
+        Step toward target_yaw_deg with dynamic rate limiting.
+        Returns the smoothed yaw command in degrees.
+        """
+        self.yaw_error_deg = wrap_to_180(target_yaw_deg - self.current_yaw_deg)
+
+        # Dynamic yaw rate: interpolate based on error magnitude
+        error_ratio = clamp(abs(self.yaw_error_deg) / YAW_FULL_SLOW_DEG, 0.0, 1.0)
+        dynamic_rate = MIN_YAW_RATE_DEG_S + (MAX_YAW_RATE_DEG_S - MIN_YAW_RATE_DEG_S) * error_ratio
+
+        max_step = dynamic_rate * dt
+        yaw_change = clamp(self.yaw_error_deg, -max_step, max_step)
+        self.current_yaw_deg += yaw_change
+        return self.current_yaw_deg
+
+
+# -------------------- Speed (with acceleration & yaw coupling) --------------------
+
+class SpeedController:
+    """Acceleration-limited speed with yaw-error coupling.
+
+    - Speed ramps up/down at ACCELERATION m/s².
+    - When yaw error is large, target speed is reduced (drone slows down to turn).
+    - YAW_FULL_SLOW_DEG controls how aggressively yaw error reduces speed.
+    """
+
+    def __init__(self):
+        self.current_speed = 0.0
+
+    def update(self, desired_speed, yaw_error_deg, dt):
+        """
+        Compute the actual speed after applying yaw-coupling and acceleration.
+        Returns clamped speed in m/s.
+        """
+        # --- Yaw-speed coupling: reduce target speed when yaw error is large ---
+        yaw_factor = 1.0 - clamp(abs(yaw_error_deg) / YAW_FULL_SLOW_DEG, 0.0, 1.0)
+        # yaw_factor: 1.0 = facing target, 0.0 = 90°+ off
+        target_speed = MIN_SPEED + (desired_speed - MIN_SPEED) * yaw_factor
+
+        # --- Acceleration limiting ---
+        speed_error = target_speed - self.current_speed
+        max_change = ACCELERATION * dt
+        self.current_speed += clamp(speed_error, -max_change, max_change)
+        self.current_speed = clamp(self.current_speed, 0.0, MAX_SPEED)
+
+        return self.current_speed
+
+
 # -------------------- Horizontal --------------------
 
 def compute_horizontal(lat, lon, target_lat, target_lon):
     """
-    Compute horizontal velocity toward target.
-    Returns (vn, ve, distance_m, bearing_rad).
+    Compute raw desired speed and bearing toward target.
+    Returns (desired_speed, distance_m, bearing_rad).
+    Does NOT apply yaw coupling or acceleration — that is SpeedController's job.
     """
     dist, bearing_rad = distance_and_bearing(lat, lon, target_lat, target_lon)
     if dist > STOP_RADIUS:
-        speed = clamp(dist / 0.2, MIN_SPEED, MAX_SPEED)
-        vn = speed * math.cos(bearing_rad)
-        ve = speed * math.sin(bearing_rad)
+        desired_speed = clamp(dist / 0.2, MIN_SPEED, MAX_SPEED)
     else:
-        vn = ve = 0.0
-    return vn, ve, dist, bearing_rad
+        desired_speed = 0.0
+    return desired_speed, dist, bearing_rad
 
 
 # -------------------- Vertical --------------------
@@ -66,23 +129,3 @@ def compute_vertical(rel_alt, target_rel_alt):
     else:
         vd = 0.0
     return vd
-
-
-# -------------------- Yaw --------------------
-
-class YawController:
-    """Rate-limited yaw controller."""
-
-    def __init__(self):
-        self.current_yaw_deg = 0.0
-
-    def update(self, target_yaw_deg, dt):
-        """
-        Step toward target_yaw_deg with rate limiting.
-        Returns the smoothed yaw command in degrees.
-        """
-        yaw_error_deg = wrap_to_180(target_yaw_deg - self.current_yaw_deg)
-        max_step = MAX_YAW_RATE_DEG_S * dt
-        yaw_change = clamp(yaw_error_deg, -max_step, max_step)
-        self.current_yaw_deg += yaw_change
-        return self.current_yaw_deg

@@ -11,7 +11,7 @@ from mavsdk.offboard import VelocityNedYaw
 
 from config import DEFAULT_SYSTEM_ADDRESS, DEFAULT_HZ, DEFAULT_ENABLE_AFTER
 from drone.connection import connect, start_offboard, watch_armed
-from navigation.flight import compute_horizontal, compute_vertical, YawController
+from navigation.flight import compute_horizontal, compute_vertical, YawController, SpeedController
 from UDP_GPS import get_current_lat_lon_alt
 
 
@@ -31,6 +31,7 @@ async def main():
     await start_offboard(drone)
 
     yaw = YawController()
+    speed_ctrl = SpeedController()
     pos_stream = drone.telemetry.position()
 
     t0 = time.monotonic()
@@ -72,10 +73,22 @@ async def main():
         target_yaw_deg = 0.0
 
         if armed and enabled:
-            vn, ve, dist, bearing_rad = compute_horizontal(lat, lon, target_lat, target_lon)
-            vd = compute_vertical(rel_alt, target_rel_alt)
+            # 1) Get desired speed and bearing to target
+            desired_speed, dist, bearing_rad = compute_horizontal(lat, lon, target_lat, target_lon)
+
+            # 2) Yaw controller (dynamic rate: big error → fast turn)
             target_yaw_deg = math.degrees(bearing_rad)
             yaw_deg = yaw.update(target_yaw_deg, dt)
+
+            # 3) Speed controller (yaw coupling: big yaw error → slow down, + acceleration)
+            speed = speed_ctrl.update(desired_speed, yaw.yaw_error_deg, dt)
+
+            # 4) Decompose speed into NED
+            vn = speed * math.cos(bearing_rad)
+            ve = speed * math.sin(bearing_rad)
+
+            # 5) Vertical
+            vd = compute_vertical(rel_alt, target_rel_alt)
 
         # Send command
         await drone.offboard.set_velocity_ned(VelocityNedYaw(vn, ve, vd, yaw_deg))
@@ -87,7 +100,8 @@ async def main():
             print(f"  Drone:  lat={lat:.6f} lon={lon:.6f} rel_alt={rel_alt:.2f}")
             print(f"  Target: lat={target_lat:.6f} lon={target_lon:.6f} rel_alt={target_rel_alt:.2f}")
             print(f"  Distance: {dist:.2f} m | Bearing: {math.degrees(bearing_rad):.2f} deg")
-            print(f"  Target yaw: {target_yaw_deg:.2f} deg | Current yaw: {yaw.current_yaw_deg:.2f} deg")
+            print(f"  Yaw: target={target_yaw_deg:.1f} current={yaw.current_yaw_deg:.1f} error={yaw.yaw_error_deg:.1f}")
+            print(f"  Speed: {speed_ctrl.current_speed:.2f} m/s")
             print(f"  Velocity cmd: vn={vn:+.2f} ve={ve:+.2f} vd={vd:+.2f}\n")
 
         await asyncio.sleep(dt)
